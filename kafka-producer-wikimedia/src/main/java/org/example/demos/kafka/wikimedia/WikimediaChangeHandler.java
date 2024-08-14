@@ -38,7 +38,7 @@ public class WikimediaChangeHandler implements EventHandler {
         // asynchronous
 
         // Make a kafka record with the data received and send it.
-
+        log.info(messageEvent.getData());
         ProducerRecord<String, String> producerRecord = new ProducerRecord<>(topic, messageEvent.getData());
         kafkaProducer.send(producerRecord);
 

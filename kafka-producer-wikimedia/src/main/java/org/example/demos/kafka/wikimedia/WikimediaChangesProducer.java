@@ -32,6 +32,11 @@ public class WikimediaChangesProducer {
           properties.setProperty(ProducerConfig.RETRIES_CONFIG, Integer.toString(Integer.MAX_VALUE));
          */
 
+        // High throughput producer properties
+        properties.setProperty(ProducerConfig.COMPRESSION_TYPE_CONFIG, "snappy");
+        properties.setProperty(ProducerConfig.LINGER_MS_CONFIG, "20");
+        properties.setProperty(ProducerConfig.BATCH_SIZE_CONFIG, Integer.toString(32*1024));
+
 
         // Create Producer
         KafkaProducer<String, String> producer = new KafkaProducer<>(properties);
