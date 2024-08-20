@@ -11,7 +11,10 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.opensearch.action.bulk.BulkRequest;
+import org.opensearch.action.bulk.BulkResponse;
 import org.opensearch.action.index.IndexRequest;
 import org.opensearch.action.index.IndexResponse;
 import org.opensearch.client.RequestOptions;
@@ -87,69 +90,118 @@ public class OpenSearchConsumer {
         return JsonParser.parseString(json).getAsJsonObject().get("meta").getAsJsonObject().get("id").getAsString();
     }
 
-     public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws IOException {
 
-        Logger log = LoggerFactory.getLogger(OpenSearchConsumer.class.getName());
+        Logger log = LoggerFactory.getLogger(OpenSearchConsumer.class.getSimpleName());
 
-        // Create an OpenSearch client
+        // first create an OpenSearch Client
         RestHighLevelClient openSearchClient = createOpenSearchClient();
 
-        // Create our Kafka client
-         KafkaConsumer<String, String> consumer = createKafkaConsumer();
+        // create our Kafka Client
+        KafkaConsumer<String, String> consumer = createKafkaConsumer();
 
-         consumer.subscribe(Collections.singleton("wikimedia.recentChange"));
+        // get a reference to the main thread
+        final Thread mainThread = Thread.currentThread();
 
-        // Create an index on openSearch if it doesn't exist
-        try(openSearchClient; consumer) {
+        // adding the shutdown hook
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+            public void run() {
+                log.info("Detected a shutdown, let's exit by calling consumer.wakeup()...");
+                consumer.wakeup();
+
+                // join the main thread to allow the execution of the code in the main thread
+                try {
+                    mainThread.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+        // we need to create the index on OpenSearch if it doesn't exist already
+
+        try(openSearchClient; consumer){
 
             boolean indexExists = openSearchClient.indices().exists(new GetIndexRequest("wikimedia"), RequestOptions.DEFAULT);
 
-            if(indexExists) {
-                log.info("Index already exists!");
-            } else {
+            if (!indexExists){
                 CreateIndexRequest createIndexRequest = new CreateIndexRequest("wikimedia");
                 openSearchClient.indices().create(createIndexRequest, RequestOptions.DEFAULT);
-
-                log.info("wikimedia index created");
+                log.info("The Wikimedia Index has been created!");
+            } else {
+                log.info("The Wikimedia Index already exits");
             }
 
-            while (true) {
+            // we subscribe the consumer
+            consumer.subscribe(Collections.singleton("wikimedia.recentchange"));
+
+
+            while(true) {
+
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(3000));
 
                 int recordCount = records.count();
-                log.info("Received " + recordCount + " records");
+                log.info("Received " + recordCount + " record(s)");
 
-                for(ConsumerRecord<String, String> record : records) {
+                BulkRequest bulkRequest = new BulkRequest();
 
-                    // Send the record to openSearch
+                for (ConsumerRecord<String, String> record : records) {
+
+                    // send the record into OpenSearch
+
+                    // strategy 1
+                    // define an ID using Kafka Record coordinates
+//                    String id = record.topic() + "_" + record.partition() + "_" + record.offset();
+
                     try {
+                        // strategy 2
+                        // we extract the ID from the JSON value
                         String id = extractId(record.value());
 
                         IndexRequest indexRequest = new IndexRequest("wikimedia")
-                                .source(record.value(), XContentType.JSON).id(id);
+                                .source(record.value(), XContentType.JSON)
+                                .id(id);
 
-                        IndexResponse response = openSearchClient.index(indexRequest, RequestOptions.DEFAULT);
+//                        IndexResponse response = openSearchClient.index(indexRequest, RequestOptions.DEFAULT);
+
+                        bulkRequest.add(indexRequest);
 
 //                        log.info(response.getId());
-
-                    } catch (Exception e) {
+                    } catch (Exception e){
 
                     }
 
                 }
 
-                // Commit offsets after entire batch is consumed
-                consumer.commitSync();
-                log.info("Offsets have been commited!");
+
+                if (bulkRequest.numberOfActions() > 0){
+                    BulkResponse bulkResponse = openSearchClient.bulk(bulkRequest, RequestOptions.DEFAULT);
+                    log.info("Inserted " + bulkResponse.getItems().length + " record(s).");
+
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+
+                    // commit offsets after the batch is consumed
+                    consumer.commitSync();
+                    log.info("Offsets have been committed!");
+                }
+
+
             }
 
+
+        } catch (WakeupException e) {
+            log.info("Consumer is starting to shut down");
+        } catch (Exception e) {
+            log.error("Unexpected exception in the consumer", e);
+        } finally {
+            consumer.close(); // close the consumer, this will also commit offsets
+            openSearchClient.close();
+            log.info("The consumer is now gracefully shut down");
         }
-
-
-
-        // Main logic
-
-        // Close things
     }
 
 }

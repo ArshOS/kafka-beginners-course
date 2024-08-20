@@ -53,7 +53,7 @@ public class WikimediaChangesProducer {
 
         // Main thread will finish execution and stream processing thread will continue but nothing will happen.
         // To avoid this, set interruption time.
-        TimeUnit.MINUTES.sleep(2);
+        TimeUnit.MINUTES.sleep(5);
 
         // Flush and close the Producer
     }
